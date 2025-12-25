@@ -1,0 +1,6 @@
+name: "Flathub submission helper action"
+description: "Flathub submission helper action to aid review of new submissions"
+author: "Flathub contributors"
+runs:
+  using: 'docker'
+  image: "docker://ghcr.io/flathub-infra/submission-helper:latest"
