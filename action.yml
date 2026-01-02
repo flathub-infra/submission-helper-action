@@ -1,0 +1,6 @@
+name: "Flathub submission validator action"
+description: "Flathub submission validator action to aid review of new submissions"
+author: "Flathub contributors"
+runs:
+  using: 'docker'
+  image: "docker://ghcr.io/flathub-infra/submission-validator:latest"
