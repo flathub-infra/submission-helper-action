@@ -111,7 +111,7 @@ def is_considered_spam(
 
     if (
         LABEL_MIGRATE not in labels
-        and has_missing_video(body, checklist)
+        and has_missing_video(body)
         and not is_appid_addon(appid)
     ):
         logger.info(

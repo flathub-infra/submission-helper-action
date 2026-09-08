@@ -6,12 +6,9 @@ from flathub_submission_checker.constants import (
     CHECKLIST_ITEMS,
     CHECKLIST_LINE_RE,
     FLATHUB_DOCS_BASE_URL,
-    MAX_UNCHECKED_ITEMS_ALLOWED,
-    REQUIRED_CHECKLIST_COUNT,
     ROLE_CHECKLIST_RE,
     VIDEO_CHECKLIST_ITEM,
     VIDEO_LINK_RE,
-    VIDEO_LOOKAHEAD_LINES,
     VIDEO_NA_RE,
 )
 
@@ -53,49 +50,44 @@ def parse_checklist(body: str) -> list[tuple[bool, str]]:
     return checklist
 
 
+def _normalize_checklist_text(text: str) -> str:
+    normalized = text.replace("*", "").replace("_", "").replace("`", "")
+    return " ".join(normalized.split()).casefold()
+
+
 def _role_checklist_matches(text: str) -> bool:
-    return bool(ROLE_CHECKLIST_RE.search(text))
+    return bool(ROLE_CHECKLIST_RE.search(_normalize_checklist_text(text)))
 
 
 def _checklist_item_matches(text: str) -> bool:
-    return any(item in text for item in CHECKLIST_ITEMS) or _role_checklist_matches(
-        text
-    )
+    normalized_text = _normalize_checklist_text(text)
+    return any(
+        _normalize_checklist_text(item) in normalized_text for item in CHECKLIST_ITEMS
+    ) or _role_checklist_matches(normalized_text)
 
 
 def checklist_matches_template(checklist: list[tuple[bool, str]]) -> bool:
-    texts = [text for _, text in checklist]
+    texts = [_normalize_checklist_text(text) for _, text in checklist]
 
     missing_items = [
-        item for item in CHECKLIST_ITEMS if not any(item in text for text in texts)
+        item
+        for item in CHECKLIST_ITEMS
+        if not any(_normalize_checklist_text(item) in text for text in texts)
     ]
 
-    role_matches = any(_role_checklist_matches(text) for text in texts)
-    if not role_matches:
+    if not any(_role_checklist_matches(text) for text in texts):
         missing_items.append("Role item: author/developer/contributor")
-
-    matches = len(missing_items) <= MAX_UNCHECKED_ITEMS_ALLOWED
 
     if missing_items:
         logger.info("Found missing required item(s): %s", missing_items)
-
-    return matches
+        return False
+    return True
 
 
 def checklist_fully_checked(checklist: list[tuple[bool, str]]) -> bool:
-    if not checklist:
-        logger.info("Checklist is empty, not fully checked")
+    if not checklist_matches_template(checklist):
         return False
-
-    relevant = [checked for checked, text in checklist if _checklist_item_matches(text)]
-    if len(relevant) < REQUIRED_CHECKLIST_COUNT:
-        logger.info(
-            "Checklist contains only %s/%s required items",
-            len(relevant),
-            REQUIRED_CHECKLIST_COUNT,
-        )
-        return False
-    return all(relevant)
+    return all(checked for checked, _ in checklist)
 
 
 def count_unchecked_relevant_items(checklist: list[tuple[bool, str]]) -> int:
@@ -109,44 +101,45 @@ def count_unchecked_relevant_items(checklist: list[tuple[bool, str]]) -> int:
     return unchecked_count
 
 
-def has_missing_video(body: str, checklist: list[tuple[bool, str]]) -> bool:
-    video_checked = any(
-        checked for checked, text in checklist if VIDEO_CHECKLIST_ITEM in text
-    )
-    if not video_checked:
-        logger.info("Video checklist item is unchecked or missing")
-        return True
+def _indentation_width(line: str) -> int:
+    expanded_line = line.expandtabs(4)
+    return len(expanded_line) - len(expanded_line.lstrip())
 
-    lines = body.split("\n")
+
+def has_missing_video(body: str) -> bool:
+    lines = body.splitlines()
 
     for i, line in enumerate(lines):
-        if VIDEO_CHECKLIST_ITEM not in line:
+        matched = CHECKLIST_LINE_RE.match(line)
+        if not matched:
             continue
+        if _normalize_checklist_text(
+            VIDEO_CHECKLIST_ITEM
+        ) not in _normalize_checklist_text(matched.group(2)):
+            continue
+        if matched.group(1).lower() != "x":
+            logger.info("Video checklist item is unchecked")
+            return True
 
-        after_item = line.split(VIDEO_CHECKLIST_ITEM, 1)[1]
-        lookahead_lines = []
-        for offset in range(1, VIDEO_LOOKAHEAD_LINES + 1):
-            j = i + offset
-            if j >= len(lines) or CHECKLIST_LINE_RE.match(lines[j]):
+        video_indent = _indentation_width(line)
+        continuation_lines = []
+        for continuation in lines[i + 1 :]:
+            if (
+                CHECKLIST_LINE_RE.match(continuation)
+                and _indentation_width(continuation) <= video_indent
+            ):
                 break
-            lookahead_lines.append(lines[j])
+            continuation_lines.append(continuation)
+        search_text = "\n".join([matched.group(2), *continuation_lines])
 
-        search_text = "\n".join([after_item, *lookahead_lines])
+        for video_link in VIDEO_LINK_RE.finditer(search_text):
+            if not video_link.group(0).startswith(f"{FLATHUB_DOCS_BASE_URL}/"):
+                return False
 
         if VIDEO_NA_RE.search(search_text):
             logger.info("Video checklist item marked N/A or no video available")
             return True
-
-        for matched in VIDEO_LINK_RE.finditer(search_text):
-            url = matched.group(0)
-            if url.startswith(f"{FLATHUB_DOCS_BASE_URL}/"):
-                continue
-            return False
-
-        logger.info(
-            "Video checklist item has no link within %s line(s) after it",
-            VIDEO_LOOKAHEAD_LINES,
-        )
+        logger.info("Video checklist item has no acceptable link")
         return True
 
     logger.info("Video checklist item not found in PR body")

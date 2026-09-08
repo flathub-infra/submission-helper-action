@@ -32,13 +32,17 @@ ADD_PREFIX_RE = re.compile(r"^add\s+", re.IGNORECASE)
 APPID_COMPONENT_RE = re.compile(r"^[A-Za-z_][\w\-]*$")
 FLATHUB_JSON_RE = re.compile(r".*/flathub\.json$")
 TOPLEVEL_MANIFEST_RE = re.compile(r"^[^/]+\.(ya?ml|json)$")
-CHECKLIST_LINE_RE = re.compile(r"^- \[([ xX])\]\s*(.+)$", re.MULTILINE)
+CHECKLIST_LINE_RE = re.compile(
+    r"^[ \t]*[-+*][ \t]+\[([ xX])\][ \t]*(.+?)\s*$",
+    re.MULTILINE,
+)
 
 VIDEO_LINK_RE = re.compile(r"https?://\S+")
 VIDEO_NA_RE = re.compile(r"\b(n/?a|no\s+video(?:\s+available)?)\b", re.IGNORECASE)
 
 ROLE_CHECKLIST_RE = re.compile(
     r"I am (?:an?|the)\s+"
+    r"(?:\(.*?\)\s+)?"
     r"(?:"
     r"author(?:\s*/\s*developer(?:\s*/\s*upstream\s+contributor)?)?|"
     r"developer(?:\s*/\s*upstream\s+contributor)?|"
@@ -53,17 +57,27 @@ ROLE_CHECKLIST_RE = re.compile(
 VIDEO_CHECKLIST_ITEM = (
     "Please attach a video showcasing the application on Linux using the Flatpak."
 )
-VIDEO_LOOKAHEAD_LINES = 2
 
 CHECKLIST_ITEMS = (
     "Please describe the application briefly.",
     "Please attach a video showcasing the application on Linux using the Flatpak.",
     "The Flatpak ID follows all the rules listed in the",
     "I have read and followed all the",
+    (
+        "The application has a meaningful development history, evidence of real-world "
+        "use, and a clear commitment to ongoing maintenance, as required by the"
+    ),
+    (
+        "I have disclosed any AI-generated material included in the application or "
+        "its Flathub packaging, as required by the"
+    ),
+    (
+        "I have not used AI tools or agents to generate or automate this submission "
+        "pull request or its review interactions."
+    ),
 )
-
-REQUIRED_CHECKLIST_COUNT = len(CHECKLIST_ITEMS) + 1
 MAX_UNCHECKED_ITEMS_ALLOWED = 1
+
 
 MASTER_COMMIT_AUTHOR_EMAIL = "mclasen@redhat.com"
 MASTER_COMMIT_MESSAGE = "Add some instructions"

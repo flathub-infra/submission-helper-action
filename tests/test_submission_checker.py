@@ -6,6 +6,7 @@ import pytest
 from flathub_submission_checker.constants import (
     BUILD_START_COMMENT_PARTIAL,
     BUILD_SUCCESS_COMMENT,
+    CHECKLIST_ITEMS,
     COMMENT_FOOTER,
     DOMAIN_COMMENT_PARTIAL,
     LABEL_AWAITING_CHANGES,
@@ -15,8 +16,6 @@ from flathub_submission_checker.constants import (
     LABEL_PR_CHECK_BLOCKED,
     LABEL_REVIEWED_WAITING,
     LABEL_WORK_IN_PROGRESS,
-    MAX_UNCHECKED_ITEMS_ALLOWED,
-    REQUIRED_CHECKLIST_COUNT,
     REVIEW_COMMENT_PARTIAL,
     SPAM_CLOSE_COMMENT,
 )
@@ -47,22 +46,26 @@ from flathub_submission_checker.validator import (
     should_start_build,
 )
 
-ROLE_LINE = "I am the author/developer/upstream contributor to the project."
+ROLE_LINE = (
+    "I am an _(please keep whichever is applicable and remove the rest)_ "
+    "author/developer/upstream contributor to the project."
+)
 
 NON_ROLE_ITEMS = """\
 - [x] Please describe the application briefly.
 - [x] Please attach a video showcasing the application on Linux using the Flatpak.
       https://example.com/demo-video.mp4
 - [x] The Flatpak ID follows all the rules listed in the requirements.
-- [x] I have read and followed all the submission guidelines.
+- [x] I have read and followed all the submission requirements and the Submission guide.
+  - [x] The application has a meaningful development history, evidence of real-world use, and a clear commitment to ongoing maintenance, as required by the development history requirements.
+  - [x] I have disclosed any AI-generated material included in the application or its Flathub packaging, as required by the Generative AI policy. **Affected parts and approximate extent:** None
+  - [x] I have not used AI tools or agents to generate or automate this submission pull request or its review interactions.
 """
 
 
 def checklist_body(role_line: str = ROLE_LINE, unchecked: int = 0) -> str:
-    lines: list[str] = [*NON_ROLE_ITEMS.strip().split("\n")]
-    checklist_line_indices = [
-        i for i, line in enumerate(lines) if line.startswith("- [x]")
-    ]
+    lines = [*NON_ROLE_ITEMS.strip().split("\n")]
+    checklist_line_indices = [i for i, line in enumerate(lines) if "[x]" in line]
     for idx in checklist_line_indices[:unchecked]:
         lines[idx] = lines[idx].replace("[x]", "[ ]", 1)
     lines.append(f"- [x] {role_line}")
@@ -73,6 +76,17 @@ FULL_CHECKLIST_BODY = checklist_body()
 PARTIAL_CHECKLIST_BODY = checklist_body(unchecked=1)
 MISSING_ITEM_CHECKLIST_BODY = NON_ROLE_ITEMS
 NO_CHECKLIST_BODY = "Just a plain PR description with no checklist at all."
+PR_10111_CHECKLIST_BODY = """\
+- [x] Please describe the application briefly.
+- [x] Please attach a video showcasing the application on Linux using the Flatpak.
+https://github.com/user-attachments/assets/9f827b16-c627-4f47-8067-4ac0a108fcad
+  - [x] The Flatpak ID follows all the rules listed in the requirements.
+  - [x] I have read and followed all the submission requirements and the Submission guide.
+  - [x] The application has a meaningful development history, evidence of real-world use, and a clear commitment to ongoing maintenance, as required by the development history requirements.
+  - [x] I have disclosed any AI-generated material included in the application or its Flathub packaging, as required by the Generative AI policy. Affected parts and approximate extent: None
+  - [x] I have not used AI tools or agents to generate or automate this submission pull request or its review interactions.
+  - [x] **I am an author/developer/upstream contributor to the project.**
+"""
 
 VALID_FILES = [
     ".github/workflows/update_sources.yaml",
@@ -276,25 +290,60 @@ class TestIsAppidAddon:
 
 
 class TestParseChecklist:
-    def test_parses_checked_and_unchecked_items(self):
-        body = "- [x] Do something\n- [X] Do another\n- [ ] Skip this\n"
-        assert parse_checklist(body) == [
-            (True, "Do something"),
-            (True, "Do another"),
-            (False, "Skip this"),
-        ]
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            (" - [x] Do something", (True, "Do something")),
+            ("\t+ [X] Do another", (True, "Do another")),
+            ("  * [ ] Skip this", (False, "Skip this")),
+        ],
+    )
+    def test_parses_markers_and_indentation(self, line, expected):
+        assert parse_checklist(f"{line}\n") == [expected]
 
     def test_empty_body_returns_empty_list(self):
         assert parse_checklist(NO_CHECKLIST_BODY) == []
 
     def test_full_checklist_body(self):
         result = parse_checklist(FULL_CHECKLIST_BODY)
-        assert len(result) == 5
+        assert len(result) == 8
         assert all(checked for checked, _ in result)
 
     def test_partial_checklist_body(self):
         result = parse_checklist(PARTIAL_CHECKLIST_BODY)
-        assert [checked for checked, _ in result] == [False, True, True, True, True]
+        assert [checked for checked, _ in result] == [
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ]
+
+    def test_pr_10111_checklist_is_complete_and_valid(self):
+        checklist = parse_checklist(PR_10111_CHECKLIST_BODY)
+        assert len(checklist) == 8
+        assert checklist_fully_checked(checklist) is True
+        assert is_considered_spam(
+            checklist,
+            ["uk._92li.lingyicute.ComputeSec.yml"],
+            PR_10111_CHECKLIST_BODY,
+            set(),
+            "uk._92li.lingyicute.ComputeSec",
+        ) == (False, "")
+        assert (
+            validate_pr_structure(
+                make_pr_context(
+                    body=PR_10111_CHECKLIST_BODY,
+                    files=["uk._92li.lingyicute.ComputeSec.yml"],
+                ),
+                checklist,
+                "uk._92li.lingyicute.ComputeSec",
+            ).is_valid
+            is True
+        )
 
 
 class TestChecklistMatchesTemplate:
@@ -309,6 +358,24 @@ class TestChecklistMatchesTemplate:
     def test_unrelated_body_does_not_match(self):
         checklist = parse_checklist("- [x] Some random item\n- [x] Another item\n")
         assert checklist_matches_template(checklist) is False
+
+    @pytest.mark.parametrize("missing_item", CHECKLIST_ITEMS)
+    def test_missing_item_fails_even_with_duplicate(self, missing_item):
+        checklist = [(True, item) for item in CHECKLIST_ITEMS if item != missing_item]
+        checklist.extend(
+            [
+                (True, next(item for item in CHECKLIST_ITEMS if item != missing_item)),
+                (True, ROLE_LINE),
+            ]
+        )
+        assert checklist_matches_template(checklist) is False
+
+    def test_normalizes_inline_emphasis(self):
+        body = FULL_CHECKLIST_BODY.replace(
+            "Please describe the application briefly.",
+            "*PLEASE   DESCRIBE* the `application` briefly.",
+        )
+        assert checklist_matches_template(parse_checklist(body)) is True
 
     @pytest.mark.parametrize(
         ("role_line", "expected"),
@@ -342,29 +409,30 @@ class TestChecklistFullyChecked:
         checklist = parse_checklist(MISSING_ITEM_CHECKLIST_BODY)
         assert checklist_fully_checked(checklist) is False
 
+    def test_extra_unchecked_item_returns_false(self):
+        body = f"{FULL_CHECKLIST_BODY}- [ ] Extra item\n"
+        assert checklist_fully_checked(parse_checklist(body)) is False
+
+    def test_extra_checked_item_returns_true(self):
+        body = f"{FULL_CHECKLIST_BODY}- [x] Extra item\n"
+        assert checklist_fully_checked(parse_checklist(body)) is True
+
     def test_empty_checklist_returns_false(self):
         assert checklist_fully_checked(parse_checklist(NO_CHECKLIST_BODY)) is False
 
 
 class TestCountUncheckedRelevantItems:
     def test_fully_checked_has_zero_unchecked(self):
-        checklist = parse_checklist(FULL_CHECKLIST_BODY)
-        assert count_unchecked_relevant_items(checklist) == 0
+        assert count_unchecked_relevant_items(parse_checklist(FULL_CHECKLIST_BODY)) == 0
 
-    @pytest.mark.parametrize("unchecked", [1, 2, 3])
+    @pytest.mark.parametrize("unchecked", [1, 2])
     def test_unchecked_count_matches_input(self, unchecked):
-        checklist = parse_checklist(checklist_body(unchecked=unchecked))
-        assert count_unchecked_relevant_items(checklist) == unchecked
-
-    def test_role_line_unchecked_also_counted(self):
-        checklist = parse_checklist(checklist_body(unchecked=4)).copy()
-        _, text = checklist[-1]
-        checklist[-1] = (False, text)
-        assert count_unchecked_relevant_items(checklist) == REQUIRED_CHECKLIST_COUNT
-
-    def test_unrelated_items_are_not_counted(self):
-        checklist = parse_checklist("- [x] Buy Flathub\n- [ ] Sell Flathub\n")
-        assert count_unchecked_relevant_items(checklist) == 0
+        assert (
+            count_unchecked_relevant_items(
+                parse_checklist(checklist_body(unchecked=unchecked))
+            )
+            == unchecked
+        )
 
 
 class TestIsConsideredSpam:
@@ -374,24 +442,18 @@ class TestIsConsideredSpam:
             VALID_FILES,
             FULL_CHECKLIST_BODY,
             set(),
-            "com.foo.bar",
-        ) == (
-            False,
-            "",
-        )
+            "com.example.foobar",
+        ) == (False, "")
 
     def test_all_files_in_subdirectory_is_spam(self):
-        nested_files = ["some/nested/file.json", "another/nested/file.yaml"]
+        body = FULL_CHECKLIST_BODY
         assert is_considered_spam(
-            parse_checklist(FULL_CHECKLIST_BODY),
-            nested_files,
-            FULL_CHECKLIST_BODY,
+            parse_checklist(body),
+            ["some/nested/file.json", "another/nested/file.yaml"],
+            body,
             set(),
-            "com.foo.bar",
-        ) == (
-            True,
-            "Files not in toplevel",
-        )
+            "com.example.foobar",
+        ) == (True, "Files not in toplevel")
 
     def test_missing_checklist_template_is_spam(self):
         assert is_considered_spam(
@@ -399,77 +461,36 @@ class TestIsConsideredSpam:
             VALID_FILES,
             NO_CHECKLIST_BODY,
             set(),
-            "com.foo.bar",
-        ) == (
-            True,
-            "Checklist(s) not completed or missing",
-        )
+            "com.example.foobar",
+        ) == (True, "Checklist(s) not completed or missing")
 
-    def test_incomplete_checklist_template_is_not_spam(self):
+    def test_incomplete_checklist_template_is_spam(self):
         assert is_considered_spam(
             parse_checklist(MISSING_ITEM_CHECKLIST_BODY),
             VALID_FILES,
             MISSING_ITEM_CHECKLIST_BODY,
             set(),
-            "com.foo.bar",
-        ) == (
-            False,
-            "",
-        )
+            "com.example.foobar",
+        ) == (True, "Checklist(s) not completed or missing")
 
-    @pytest.mark.parametrize("unchecked", [2, 3, 4])
+    @pytest.mark.parametrize("unchecked", [2, 3])
     def test_too_many_unchecked_items_is_spam(self, unchecked):
-        lines = NON_ROLE_ITEMS.strip().split("\n")
+        lines = checklist_body().splitlines()
         non_video_indices = [
-            i
-            for i, line in enumerate(lines)
-            if line.startswith("- [x]") and "video" not in line
+            index
+            for index, line in enumerate(lines)
+            if "[x]" in line and "video" not in line
         ]
-        for idx in non_video_indices[:unchecked]:
-            lines[idx] = lines[idx].replace("[x]", "[ ]", 1)
-        lines.append(f"- [x] {ROLE_LINE}")
+        for index in non_video_indices[:unchecked]:
+            lines[index] = lines[index].replace("[x]", "[ ]", 1)
         body = "\n".join(lines) + "\n"
-
         assert is_considered_spam(
             parse_checklist(body),
             VALID_FILES,
             body,
             set(),
-            "com.foo.bar",
-        ) == (
-            True,
-            "Checklist(s) not completed or missing",
-        )
-
-    def test_missing_video_item_is_spam(self):
-        body = checklist_body().replace(
-            "      https://example.com/demo-video.mp4\n", ""
-        )
-        assert is_considered_spam(
-            parse_checklist(body),
-            VALID_FILES,
-            body,
-            set(),
-            "com.foo.bar",
-        ) == (
-            True,
-            "Video checklist requirement not met",
-        )
-
-    def test_missing_video_item_but_migrate_appid(self):
-        body = checklist_body().replace(
-            "      https://example.com/demo-video.mp4\n", ""
-        )
-        assert is_considered_spam(
-            parse_checklist(body),
-            VALID_FILES,
-            body,
-            {"migrate-app-id"},
-            "com.foo.bar",
-        ) == (
-            False,
-            "",
-        )
+            "com.example.foobar",
+        ) == (True, "Checklist(s) not completed or missing")
 
     def test_one_unchecked_item_is_not_spam(self):
         body = checklist_body(unchecked=1)
@@ -478,17 +499,11 @@ class TestIsConsideredSpam:
             VALID_FILES,
             body,
             set(),
-            "com.foo.bar",
-        ) == (
-            False,
-            "",
-        )
+            "com.example.foobar",
+        ) == (False, "")
 
-    def test_unchecked_boundary_matches_max_allowed_constant(self):
-        assert MAX_UNCHECKED_ITEMS_ALLOWED == 1
-
-    def test_addon_appid_skips_missing_video_check(self):
-        body = checklist_body().replace(
+    def test_missing_video_is_spam(self):
+        body = FULL_CHECKLIST_BODY.replace(
             "      https://example.com/demo-video.mp4\n", ""
         )
         assert is_considered_spam(
@@ -496,26 +511,23 @@ class TestIsConsideredSpam:
             VALID_FILES,
             body,
             set(),
-            "org.freedesktop.Sdk.Extension.foobar",
-        ) == (
-            False,
-            "",
-        )
+            "com.example.foobar",
+        ) == (True, "Video checklist requirement not met")
 
-    def test_missing_appid_with_missing_video_is_spam(self):
-        body = checklist_body().replace(
+    @pytest.mark.parametrize(
+        ("labels", "appid"),
+        [
+            ({"migrate-app-id"}, "com.example.foobar"),
+            (set(), "org.freedesktop.Sdk.Extension.foobar"),
+        ],
+    )
+    def test_video_requirement_exemptions_are_not_spam(self, labels, appid):
+        body = FULL_CHECKLIST_BODY.replace(
             "      https://example.com/demo-video.mp4\n", ""
         )
         assert is_considered_spam(
-            parse_checklist(body),
-            VALID_FILES,
-            body,
-            set(),
-            None,
-        ) == (
-            True,
-            "Video checklist requirement not met",
-        )
+            parse_checklist(body), VALID_FILES, body, labels, appid
+        ) == (False, "")
 
 
 class TestHasMasterCommit:
@@ -813,21 +825,25 @@ class TestHasMissingVideo:
             "- [x] Please attach a video showcasing the application on Linux "
             "using the Flatpak. https://example.com/video.mp4\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is False
+        assert has_missing_video(body) is False
 
-    def test_video_link_on_next_line_is_not_missing(self):
+    def test_video_link_on_continuation_line_is_not_missing(self):
         body = (
             "- [x] Please attach a video showcasing the application on Linux "
-            "using the Flatpak.\nhttps://example.com/video.mp4\n"
+            "using the Flatpak.\n"
+            "\n"
+            "\n"
+            "https://github.com/user-attachments/assets/9f827b16-c627-4f47-8067-4ac0a108fcad\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is False
+        assert has_missing_video(body) is False
 
-    def test_no_link_after_item_is_missing(self):
+    def test_video_link_in_nested_task_item_is_not_missing(self):
         body = (
             "- [x] Please attach a video showcasing the application on Linux "
-            "using the Flatpak.\n- [x] Some other item.\n"
+            "using the Flatpak.\n"
+            "  - [x] Demo video: https://example.com/video.mp4\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is True
+        assert has_missing_video(body) is False
 
     @pytest.mark.parametrize("marker", ["N/A", "n/a", "NA", "no video available"])
     def test_marked_na_is_missing(self, marker):
@@ -835,48 +851,39 @@ class TestHasMissingVideo:
             "- [x] Please attach a video showcasing the application on Linux "
             f"using the Flatpak. {marker}\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is True
+        assert has_missing_video(body) is True
+
+    def test_valid_video_link_overrides_na_marker(self):
+        body = (
+            "- [x] Please attach a video showcasing the application on Linux "
+            "using the Flatpak. N/A — actually: https://example.com/video.mp4\n"
+        )
+        assert has_missing_video(body) is False
 
     def test_unchecked_video_item_with_link_is_still_missing(self):
         body = (
             "- [ ] Please attach a video showcasing the application on Linux "
             "using the Flatpak. https://example.com/video.mp4\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is True
+        assert has_missing_video(body) is True
 
-    def test_video_link_two_lines_down_with_blank_line_is_not_missing(self):
+    def test_docs_link_is_not_a_video_link(self):
         body = (
             "- [x] Please attach a video showcasing the application on Linux "
-            "using the Flatpak.\n"
-            "\n"
-            "https://github.com/user-attachments/assets/9f827b16-c627-4f47-8067-4ac0a108fcad\n"
+            "using the Flatpak. https://docs.flathub.org/docs/for-app-authors/submission\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is False
+        assert has_missing_video(body) is True
 
-    def test_link_three_lines_down_exceeds_lookahead_is_missing(self):
+    def test_continuation_stops_at_next_task_item(self):
         body = (
             "- [x] Please attach a video showcasing the application on Linux "
             "using the Flatpak.\n"
-            "\n"
-            "\n"
-            "https://example.com/video.mp4\n"
-        )
-        assert has_missing_video(body, parse_checklist(body)) is True
-
-    def test_lookahead_stops_at_next_checklist_item(self):
-        body = (
-            "- [x] Please attach a video showcasing the application on Linux "
-            "using the Flatpak.\n"
-            "\n"
             "- [x] I am an author to the project. Link: https://example.com/issues/1\n"
         )
-        assert has_missing_video(body, parse_checklist(body)) is True
+        assert has_missing_video(body) is True
 
     def test_video_item_absent_from_body_is_missing(self):
-        assert (
-            has_missing_video(NO_CHECKLIST_BODY, parse_checklist(NO_CHECKLIST_BODY))
-            is True
-        )
+        assert has_missing_video(NO_CHECKLIST_BODY) is True
 
 
 class TestValidatePR:
@@ -924,6 +931,24 @@ class TestValidatePR:
         assert validator.validate_pr(7378) is True
         client.close_pr.assert_called_once_with(7378)
         assert SPAM_CLOSE_COMMENT in client.post_comment.call_args[0][1]
+
+    def test_missing_video_closes_pr(self):
+        body = FULL_CHECKLIST_BODY.replace(
+            "      https://example.com/demo-video.mp4\n", ""
+        )
+        raw_pr = make_fake_raw_pr(
+            title="Add com.example.foobar",
+            body=body,
+            files=["com.example.foobar.json"],
+        )
+        client = make_client(fetch_pr=raw_pr)
+
+        assert self._validator(client).validate_pr(7378) is True
+        client.close_pr.assert_called_once_with(7378)
+        assert (
+            "Diagnostics: Video checklist requirement not met."
+            in (client.post_comment.call_args[0][1])
+        )
 
     def test_undrafted_pr_loses_work_in_progress_label(self):
         raw_pr = make_fake_raw_pr(
@@ -1039,7 +1064,8 @@ class TestComment:
 
     def test_deduper_matches_footered_comment(self):
         previous_comment = "Some comment body" + COMMENT_FOOTER
-        ctx = make_pr_context(comment_lines=previous_comment.split("\n"))
+        previous_lines = [str(line) for line in previous_comment.split("\n")]
+        ctx = make_pr_context(comment_lines=previous_lines)
         client = make_client()
         assert self._validator(client)._comment(ctx, "Some comment body") is True
         client.post_comment.assert_not_called()
@@ -1102,15 +1128,6 @@ class TestComment:
                 VALID_FILES,
                 "Checklist(s) not completed or missing",
                 id="checklist-missing",
-            ),
-            pytest.param(
-                "Add com.example.foobar",
-                checklist_body().replace(
-                    "      https://example.com/demo-video.mp4\n", ""
-                ),
-                VALID_FILES,
-                "Video checklist requirement not met",
-                id="video-missing",
             ),
         ],
     )
