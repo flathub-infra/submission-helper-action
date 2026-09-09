@@ -367,7 +367,9 @@ class TestParseChecklist:
 class TestChecklistMatchesTemplate:
     def test_full_checklist_matches(self):
         assert (
-            checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE)
+            checklist_matches_template(
+                parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
             is True
         )
 
@@ -383,9 +385,7 @@ class TestChecklistMatchesTemplate:
         checklist = parse_checklist("- [x] Some random item\n- [x] Another item\n")
         assert checklist_matches_template(checklist, CHECKLIST_DATE) is False
 
-    @pytest.mark.parametrize(
-        "missing_item", [item for item, _ in CHECKLIST_ITEMS]
-    )
+    @pytest.mark.parametrize("missing_item", [item for item, _ in CHECKLIST_ITEMS])
     def test_missing_item_fails_even_with_duplicate(self, missing_item):
         items = [item for item, _ in CHECKLIST_ITEMS]
         checklist = [(True, item) for item in items if item != missing_item]
@@ -427,11 +427,18 @@ class TestChecklistMatchesTemplate:
 
 class TestChecklistFullyChecked:
     def test_all_checked_returns_true(self):
-        assert checklist_fully_checked(parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE) is True
+        assert (
+            checklist_fully_checked(
+                parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
+            is True
+        )
 
     def test_one_unchecked_returns_false(self):
         assert (
-            checklist_fully_checked(parse_checklist(PARTIAL_CHECKLIST_BODY), CHECKLIST_DATE)
+            checklist_fully_checked(
+                parse_checklist(PARTIAL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
             is False
         )
 
@@ -448,7 +455,10 @@ class TestChecklistFullyChecked:
         assert checklist_fully_checked(parse_checklist(body), CHECKLIST_DATE) is True
 
     def test_empty_checklist_returns_false(self):
-        assert checklist_fully_checked(parse_checklist(NO_CHECKLIST_BODY), CHECKLIST_DATE) is False
+        assert (
+            checklist_fully_checked(parse_checklist(NO_CHECKLIST_BODY), CHECKLIST_DATE)
+            is False
+        )
 
 
 class TestCountUncheckedRelevantItems:
@@ -677,22 +687,21 @@ class TestDateAwareChecklist:
             "Future submission requirement.",
             datetime(2026, 10, 1, tzinfo=UTC),
         )
-        monkeypatch.setattr(
-            parsing, "CHECKLIST_ITEMS", (*CHECKLIST_ITEMS, future_item)
-        )
+        monkeypatch.setattr(parsing, "CHECKLIST_ITEMS", (*CHECKLIST_ITEMS, future_item))
         september = datetime(2026, 9, 10, tzinfo=UTC)
         october = datetime(2026, 10, 1, tzinfo=UTC)
         after_october = datetime(2026, 10, 1, 0, 0, 1, tzinfo=UTC)
-        eastern_after_october = datetime.fromisoformat(
-            "2026-09-30T20:00:01-04:00"
-        )
+        eastern_after_october = datetime.fromisoformat("2026-09-30T20:00:01-04:00")
         future_body = f"{FULL_CHECKLIST_BODY}- [x] {future_item[0]}\n"
 
         assert (
             checklist_fully_checked(parse_checklist(FULL_CHECKLIST_BODY), september)
             is True
         )
-        assert checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY), october) is False
+        assert (
+            checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY), october)
+            is False
+        )
         assert (
             checklist_matches_template(
                 parse_checklist(FULL_CHECKLIST_BODY), after_october
@@ -749,6 +758,7 @@ class TestDateAwareChecklist:
             "com.example.foobar",
             effective_date,
         ) == (True, "Checklist(s) not completed or missing")
+
 
 class TestHasMasterCommit:
     def test_detected_as_second_commit(self):

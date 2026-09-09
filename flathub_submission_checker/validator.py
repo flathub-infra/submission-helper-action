@@ -248,10 +248,7 @@ class PRValidator:
             checklist, ctx.files, ctx.body, ctx.labels, appid, ctx.created_at
         )
         if spam_ret:
-            if (
-                ctx.created_at is None
-                or ctx.created_at < self.AUTO_CLOSE_CUTOFF_DATE
-            ):
+            if ctx.created_at is None or ctx.created_at < self.AUTO_CLOSE_CUTOFF_DATE:
                 logger.info(
                     "PR #%s is not eligible for auto-close; skipping spam action",
                     ctx.number,

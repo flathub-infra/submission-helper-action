@@ -130,9 +130,7 @@ def count_unchecked_relevant_items(
 ) -> int:
     items = _checklist_items_for_date(created_at)
     relevant = [
-        checked
-        for checked, text in checklist
-        if _checklist_item_matches(text, items)
+        checked for checked, text in checklist if _checklist_item_matches(text, items)
     ]
     unchecked_count = sum(1 for checked in relevant if not checked)
     logger.info(
