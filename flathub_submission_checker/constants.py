@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 
 GITHUB_BASE_URL = "https://github.com"
 FLATHUB_REPO_SLUG = "flathub/flathub"
@@ -59,21 +60,27 @@ VIDEO_CHECKLIST_ITEM = (
 )
 
 CHECKLIST_ITEMS = (
-    "Please describe the application briefly.",
-    "Please attach a video showcasing the application on Linux using the Flatpak.",
-    "The Flatpak ID follows all the rules listed in the",
-    "I have read and followed all the",
+    ("Please describe the application briefly.", None),
+    (
+        "Please attach a video showcasing the application on Linux using the Flatpak.",
+        None,
+    ),
+    ("The Flatpak ID follows all the rules listed in the", None),
+    ("I have read and followed all the", None),
     (
         "The application has a meaningful development history, evidence of real-world "
-        "use, and a clear commitment to ongoing maintenance, as required by the"
+        "use, and a clear commitment to ongoing maintenance, as required by the",
+        datetime(2026, 9, 9, tzinfo=UTC),
     ),
     (
         "I have disclosed any AI-generated material included in the application or "
-        "its Flathub packaging, as required by the"
+        "its Flathub packaging, as required by the",
+        datetime(2026, 9, 9, tzinfo=UTC),
     ),
     (
         "I have not used AI tools or agents to generate or automate this submission "
-        "pull request or its review interactions."
+        "pull request or its review interactions.",
+        datetime(2026, 9, 9, tzinfo=UTC),
     ),
 )
 MAX_UNCHECKED_ITEMS_ALLOWED = 1

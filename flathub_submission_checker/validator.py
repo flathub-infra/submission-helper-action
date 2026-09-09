@@ -149,6 +149,7 @@ def should_promote_to_awaiting_review(ctx: PRContext, unresolved_threads: int) -
 
 class PRValidator:
     CUTOFF_DATE = datetime(2025, 5, 25, tzinfo=UTC)
+    AUTO_CLOSE_CUTOFF_DATE = datetime(2026, 9, 9, tzinfo=UTC)
     PR_LIST_LIMIT = 30
     PR_LIST_SCAN_LIMIT = 50
 
@@ -244,9 +245,18 @@ class PRValidator:
         checklist = parse_checklist(ctx.body)
 
         spam_ret, spam_comment = is_considered_spam(
-            checklist, ctx.files, ctx.body, ctx.labels, appid
+            checklist, ctx.files, ctx.body, ctx.labels, appid, ctx.created_at
         )
         if spam_ret:
+            if (
+                ctx.created_at is None
+                or ctx.created_at < self.AUTO_CLOSE_CUTOFF_DATE
+            ):
+                logger.info(
+                    "PR #%s is not eligible for auto-close; skipping spam action",
+                    ctx.number,
+                )
+                return True
             logger.info("PR #%s considered spam, closing", ctx.number)
             SPAM_COMMENT = f"{SPAM_CLOSE_COMMENT} Diagnostics: {spam_comment}."
             ok = self._comment(ctx, SPAM_COMMENT)

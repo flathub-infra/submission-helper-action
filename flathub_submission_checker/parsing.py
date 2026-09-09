@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from flathub_submission_checker.constants import (
     ADD_PREFIX_RE,
@@ -59,19 +60,31 @@ def _role_checklist_matches(text: str) -> bool:
     return bool(ROLE_CHECKLIST_RE.search(_normalize_checklist_text(text)))
 
 
-def _checklist_item_matches(text: str) -> bool:
+def _checklist_items_for_date(created_at: datetime | None) -> tuple[str, ...]:
+    return tuple(
+        item
+        for item, effective_date in CHECKLIST_ITEMS
+        if effective_date is None
+        or (created_at is not None and effective_date <= created_at)
+    )
+
+
+def _checklist_item_matches(text: str, items: tuple[str, ...]) -> bool:
     normalized_text = _normalize_checklist_text(text)
     return any(
-        _normalize_checklist_text(item) in normalized_text for item in CHECKLIST_ITEMS
+        _normalize_checklist_text(item) in normalized_text for item in items
     ) or _role_checklist_matches(normalized_text)
 
 
-def checklist_matches_template(checklist: list[tuple[bool, str]]) -> bool:
+def checklist_matches_template(
+    checklist: list[tuple[bool, str]], created_at: datetime | None
+) -> bool:
+    items = _checklist_items_for_date(created_at)
     texts = [_normalize_checklist_text(text) for _, text in checklist]
 
     missing_items = [
         item
-        for item in CHECKLIST_ITEMS
+        for item in items
         if not any(_normalize_checklist_text(item) in text for text in texts)
     ]
 
@@ -84,14 +97,43 @@ def checklist_matches_template(checklist: list[tuple[bool, str]]) -> bool:
     return True
 
 
-def checklist_fully_checked(checklist: list[tuple[bool, str]]) -> bool:
-    if not checklist_matches_template(checklist):
+def checklist_fully_checked(
+    checklist: list[tuple[bool, str]], created_at: datetime | None
+) -> bool:
+    items = _checklist_items_for_date(created_at)
+    if not checklist_matches_template(checklist, created_at):
         return False
-    return all(checked for checked, _ in checklist)
+
+    not_yet_effective_items = tuple(
+        item
+        for item, effective_date in CHECKLIST_ITEMS
+        if effective_date is not None
+        and (created_at is None or effective_date > created_at)
+    )
+    for checked, text in checklist:
+        if checked:
+            continue
+        if _checklist_item_matches(text, items):
+            return False
+        normalized_text = _normalize_checklist_text(text)
+        if any(
+            _normalize_checklist_text(item) in normalized_text
+            for item in not_yet_effective_items
+        ):
+            continue
+        return False
+    return True
 
 
-def count_unchecked_relevant_items(checklist: list[tuple[bool, str]]) -> int:
-    relevant = [checked for checked, text in checklist if _checklist_item_matches(text)]
+def count_unchecked_relevant_items(
+    checklist: list[tuple[bool, str]], created_at: datetime | None
+) -> int:
+    items = _checklist_items_for_date(created_at)
+    relevant = [
+        checked
+        for checked, text in checklist
+        if _checklist_item_matches(text, items)
+    ]
     unchecked_count = sum(1 for checked in relevant if not checked)
     logger.info(
         "Found %s relevant checklists and %s relevant but unchecked checklists",

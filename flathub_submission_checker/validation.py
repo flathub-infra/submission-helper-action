@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from publicsuffixlist import PublicSuffixList  # type: ignore[import-untyped]
 
@@ -98,6 +99,7 @@ def is_considered_spam(
     body: str,
     labels: set[str],
     appid: str | None,
+    created_at: datetime | None,
 ) -> tuple[bool, str]:
     if files and all("/" in f for f in files):
         logger.info(
@@ -105,7 +107,7 @@ def is_considered_spam(
         )
         return (True, "Files not in toplevel")
 
-    if not checklist_matches_template(checklist):
+    if not checklist_matches_template(checklist, created_at):
         logger.info("Checklist missing or altered, flagging as spam")
         return (True, "Checklist(s) not completed or missing")
 
@@ -119,7 +121,7 @@ def is_considered_spam(
         )
         return (True, "Video checklist requirement not met")
 
-    unchecked_count = count_unchecked_relevant_items(checklist)
+    unchecked_count = count_unchecked_relevant_items(checklist, created_at)
     result = unchecked_count > MAX_UNCHECKED_ITEMS_ALLOWED
     logger.info(
         "Unchecked checklist count is %s > %s",
@@ -151,7 +153,7 @@ def validate_pr_structure(
             "- Flatpak manifest is at toplevel",
         ),
         (
-            checklist_fully_checked(checklist),
+            checklist_fully_checked(checklist, ctx.created_at),
             f"- All [checklists]({PR_TEMPLATE_URL}) "
             "are present in PR body and are completed",
         ),

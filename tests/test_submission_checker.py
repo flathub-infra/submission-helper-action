@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
 
+from flathub_submission_checker import parsing
 from flathub_submission_checker.constants import (
     BUILD_START_COMMENT_PARTIAL,
     BUILD_SUCCESS_COMMENT,
@@ -51,6 +53,8 @@ ROLE_LINE = (
     "author/developer/upstream contributor to the project."
 )
 
+CHECKLIST_DATE = datetime(2026, 9, 9, tzinfo=UTC)
+
 NON_ROLE_ITEMS = """\
 - [x] Please describe the application briefly.
 - [x] Please attach a video showcasing the application on Linux using the Flatpak.
@@ -76,6 +80,14 @@ FULL_CHECKLIST_BODY = checklist_body()
 PARTIAL_CHECKLIST_BODY = checklist_body(unchecked=1)
 MISSING_ITEM_CHECKLIST_BODY = NON_ROLE_ITEMS
 NO_CHECKLIST_BODY = "Just a plain PR description with no checklist at all."
+LEGACY_CHECKLIST_BODY = """\
+- [x] Please describe the application briefly.
+- [x] Please attach a video showcasing the application on Linux using the Flatpak.
+      https://example.com/demo-video.mp4
+- [x] The Flatpak ID follows all the rules listed in the requirements.
+- [x] I have read and followed all the submission requirements and the Submission guide.
+- [x] I am the author/developer/upstream contributor to the project.
+"""
 PR_10111_CHECKLIST_BODY = """\
 - [x] Please describe the application briefly.
 - [x] Please attach a video showcasing the application on Linux using the Flatpak.
@@ -145,6 +157,7 @@ class FakeRawPR:
     title: str | None
     body: str | None
     draft: bool
+    created_at: datetime | None
     _comments: list[FakeComment] = field(default_factory=list)
     _files: list[FakeFile] = field(default_factory=list)
     _labels: list[FakeLabel] = field(default_factory=list)
@@ -172,6 +185,7 @@ def make_pr_context(
     labels: set[str] | None = None,
     comment_lines: list[str] | None = None,
     has_master_commit_: bool = False,
+    created_at: datetime | None = CHECKLIST_DATE,
 ) -> PRContext:
     return PRContext(
         number=number,
@@ -180,6 +194,7 @@ def make_pr_context(
         is_draft=is_draft,
         files=files if files is not None else list(VALID_FILES),
         labels=labels if labels is not None else set(),
+        created_at=created_at,
         comment_lines=comment_lines if comment_lines is not None else [],
         has_master_commit=has_master_commit_,
     )
@@ -194,12 +209,14 @@ def make_fake_raw_pr(
     files: list[str] | None = None,
     labels: list[str] | None = None,
     commits: list[FakeRawCommit] | None = None,
+    created_at: datetime | None = CHECKLIST_DATE,
 ) -> FakeRawPR:
     return FakeRawPR(
         number=number,
         title=title,
         body=body,
         draft=draft,
+        created_at=created_at,
         _comments=[FakeComment(body=c.body, user=c.user) for c in (comments or [])],
         _files=[FakeFile(filename=f) for f in (files or VALID_FILES)],
         _labels=[FakeLabel(name=n) for n in (labels or [])],
@@ -325,13 +342,14 @@ class TestParseChecklist:
     def test_pr_10111_checklist_is_complete_and_valid(self):
         checklist = parse_checklist(PR_10111_CHECKLIST_BODY)
         assert len(checklist) == 8
-        assert checklist_fully_checked(checklist) is True
+        assert checklist_fully_checked(checklist, CHECKLIST_DATE) is True
         assert is_considered_spam(
             checklist,
             ["uk._92li.lingyicute.ComputeSec.yml"],
             PR_10111_CHECKLIST_BODY,
             set(),
             "uk._92li.lingyicute.ComputeSec",
+            CHECKLIST_DATE,
         ) == (False, "")
         assert (
             validate_pr_structure(
@@ -348,34 +366,43 @@ class TestParseChecklist:
 
 class TestChecklistMatchesTemplate:
     def test_full_checklist_matches(self):
-        assert checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY)) is True
+        assert (
+            checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE)
+            is True
+        )
 
     def test_partial_checklist_still_matches_template(self):
         assert (
-            checklist_matches_template(parse_checklist(PARTIAL_CHECKLIST_BODY)) is True
+            checklist_matches_template(
+                parse_checklist(PARTIAL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
+            is True
         )
 
     def test_unrelated_body_does_not_match(self):
         checklist = parse_checklist("- [x] Some random item\n- [x] Another item\n")
-        assert checklist_matches_template(checklist) is False
+        assert checklist_matches_template(checklist, CHECKLIST_DATE) is False
 
-    @pytest.mark.parametrize("missing_item", CHECKLIST_ITEMS)
+    @pytest.mark.parametrize(
+        "missing_item", [item for item, _ in CHECKLIST_ITEMS]
+    )
     def test_missing_item_fails_even_with_duplicate(self, missing_item):
-        checklist = [(True, item) for item in CHECKLIST_ITEMS if item != missing_item]
+        items = [item for item, _ in CHECKLIST_ITEMS]
+        checklist = [(True, item) for item in items if item != missing_item]
         checklist.extend(
             [
-                (True, next(item for item in CHECKLIST_ITEMS if item != missing_item)),
+                (True, next(item for item in items if item != missing_item)),
                 (True, ROLE_LINE),
             ]
         )
-        assert checklist_matches_template(checklist) is False
+        assert checklist_matches_template(checklist, CHECKLIST_DATE) is False
 
     def test_normalizes_inline_emphasis(self):
         body = FULL_CHECKLIST_BODY.replace(
             "Please describe the application briefly.",
             "*PLEASE   DESCRIBE* the `application` briefly.",
         )
-        assert checklist_matches_template(parse_checklist(body)) is True
+        assert checklist_matches_template(parse_checklist(body), CHECKLIST_DATE) is True
 
     @pytest.mark.parametrize(
         ("role_line", "expected"),
@@ -400,36 +427,44 @@ class TestChecklistMatchesTemplate:
 
 class TestChecklistFullyChecked:
     def test_all_checked_returns_true(self):
-        assert checklist_fully_checked(parse_checklist(FULL_CHECKLIST_BODY)) is True
+        assert checklist_fully_checked(parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE) is True
 
     def test_one_unchecked_returns_false(self):
-        assert checklist_fully_checked(parse_checklist(PARTIAL_CHECKLIST_BODY)) is False
+        assert (
+            checklist_fully_checked(parse_checklist(PARTIAL_CHECKLIST_BODY), CHECKLIST_DATE)
+            is False
+        )
 
     def test_missing_role_item_returns_false(self):
         checklist = parse_checklist(MISSING_ITEM_CHECKLIST_BODY)
-        assert checklist_fully_checked(checklist) is False
+        assert checklist_fully_checked(checklist, CHECKLIST_DATE) is False
 
     def test_extra_unchecked_item_returns_false(self):
         body = f"{FULL_CHECKLIST_BODY}- [ ] Extra item\n"
-        assert checklist_fully_checked(parse_checklist(body)) is False
+        assert checklist_fully_checked(parse_checklist(body), CHECKLIST_DATE) is False
 
     def test_extra_checked_item_returns_true(self):
         body = f"{FULL_CHECKLIST_BODY}- [x] Extra item\n"
-        assert checklist_fully_checked(parse_checklist(body)) is True
+        assert checklist_fully_checked(parse_checklist(body), CHECKLIST_DATE) is True
 
     def test_empty_checklist_returns_false(self):
-        assert checklist_fully_checked(parse_checklist(NO_CHECKLIST_BODY)) is False
+        assert checklist_fully_checked(parse_checklist(NO_CHECKLIST_BODY), CHECKLIST_DATE) is False
 
 
 class TestCountUncheckedRelevantItems:
     def test_fully_checked_has_zero_unchecked(self):
-        assert count_unchecked_relevant_items(parse_checklist(FULL_CHECKLIST_BODY)) == 0
+        assert (
+            count_unchecked_relevant_items(
+                parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
+            == 0
+        )
 
     @pytest.mark.parametrize("unchecked", [1, 2])
     def test_unchecked_count_matches_input(self, unchecked):
         assert (
             count_unchecked_relevant_items(
-                parse_checklist(checklist_body(unchecked=unchecked))
+                parse_checklist(checklist_body(unchecked=unchecked)), CHECKLIST_DATE
             )
             == unchecked
         )
@@ -443,6 +478,7 @@ class TestIsConsideredSpam:
             FULL_CHECKLIST_BODY,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (False, "")
 
     def test_all_files_in_subdirectory_is_spam(self):
@@ -453,6 +489,7 @@ class TestIsConsideredSpam:
             body,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (True, "Files not in toplevel")
 
     def test_missing_checklist_template_is_spam(self):
@@ -462,6 +499,7 @@ class TestIsConsideredSpam:
             NO_CHECKLIST_BODY,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (True, "Checklist(s) not completed or missing")
 
     def test_incomplete_checklist_template_is_spam(self):
@@ -471,6 +509,7 @@ class TestIsConsideredSpam:
             MISSING_ITEM_CHECKLIST_BODY,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (True, "Checklist(s) not completed or missing")
 
     @pytest.mark.parametrize("unchecked", [2, 3])
@@ -490,6 +529,7 @@ class TestIsConsideredSpam:
             body,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (True, "Checklist(s) not completed or missing")
 
     def test_one_unchecked_item_is_not_spam(self):
@@ -500,6 +540,7 @@ class TestIsConsideredSpam:
             body,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (False, "")
 
     def test_missing_video_is_spam(self):
@@ -512,6 +553,7 @@ class TestIsConsideredSpam:
             body,
             set(),
             "com.example.foobar",
+            CHECKLIST_DATE,
         ) == (True, "Video checklist requirement not met")
 
     @pytest.mark.parametrize(
@@ -526,9 +568,187 @@ class TestIsConsideredSpam:
             "      https://example.com/demo-video.mp4\n", ""
         )
         assert is_considered_spam(
-            parse_checklist(body), VALID_FILES, body, labels, appid
+            parse_checklist(body), VALID_FILES, body, labels, appid, CHECKLIST_DATE
         ) == (False, "")
 
+
+class TestDateAwareChecklist:
+    def test_legacy_checklist_before_cutoff_passes(self):
+        created_at = datetime(2026, 9, 8, 23, 59, 59, tzinfo=UTC)
+        checklist = parse_checklist(LEGACY_CHECKLIST_BODY)
+        assert checklist_matches_template(checklist, created_at) is True
+        assert checklist_fully_checked(checklist, created_at) is True
+        assert is_considered_spam(
+            checklist,
+            VALID_FILES,
+            LEGACY_CHECKLIST_BODY,
+            set(),
+            "com.example.foobar",
+            created_at,
+        ) == (False, "")
+        assert (
+            validate_pr_structure(
+                make_pr_context(
+                    body=LEGACY_CHECKLIST_BODY,
+                    created_at=created_at,
+                ),
+                checklist,
+                "com.example.foobar",
+            ).is_valid
+            is True
+        )
+
+        client = make_client(
+            fetch_pr=make_fake_raw_pr(
+                body=LEGACY_CHECKLIST_BODY,
+                created_at=created_at,
+            )
+        )
+        assert PRValidator(client, "flathub/flathub").validate_pr(7378) is True
+        client.close_pr.assert_not_called()
+        client.add_labels.assert_any_call(7378, LABEL_AWAITING_REVIEW)
+
+    def test_legacy_checklist_at_cutoff_closes(self):
+        checklist = parse_checklist(LEGACY_CHECKLIST_BODY)
+        assert checklist_matches_template(checklist, CHECKLIST_DATE) is False
+        assert (
+            checklist_matches_template(
+                parse_checklist(FULL_CHECKLIST_BODY), CHECKLIST_DATE
+            )
+            is True
+        )
+
+        client = make_client(
+            fetch_pr=make_fake_raw_pr(
+                body=LEGACY_CHECKLIST_BODY,
+                created_at=CHECKLIST_DATE,
+            )
+        )
+        assert PRValidator(client, "flathub/flathub").validate_pr(7378) is True
+        client.close_pr.assert_called_once_with(7378)
+        assert SPAM_CLOSE_COMMENT in client.post_comment.call_args[0][1]
+
+    @pytest.mark.parametrize(
+        ("body", "files"),
+        [
+            (NO_CHECKLIST_BODY, VALID_FILES),
+            (
+                FULL_CHECKLIST_BODY,
+                ["some/nested/file.json", "another/nested/file.yaml"],
+            ),
+        ],
+    )
+    def test_pre_cutoff_spam_stays_open(self, body, files):
+        created_at = datetime(2026, 9, 8, 23, 59, 59, tzinfo=UTC)
+        raw_pr = make_fake_raw_pr(body=body, files=files, created_at=created_at)
+        client = make_client(fetch_pr=raw_pr)
+        assert PRValidator(client, "flathub/flathub").validate_pr(7378) is True
+        client.close_pr.assert_not_called()
+        client.post_comment.assert_not_called()
+
+        single_client = make_client(
+            fetch_pr=make_fake_raw_pr(
+                body=body,
+                files=files,
+                created_at=created_at,
+            )
+        )
+        assert PRValidator(single_client, "flathub/flathub").run_single(7378) is True
+        single_client.close_pr.assert_not_called()
+        single_client.post_comment.assert_not_called()
+
+    def test_missing_creation_date_stays_open(self):
+        checklist = parse_checklist(LEGACY_CHECKLIST_BODY)
+        assert checklist_matches_template(checklist, None) is True
+        assert checklist_fully_checked(checklist, None) is True
+
+        client = make_client(
+            fetch_pr=make_fake_raw_pr(
+                body=NO_CHECKLIST_BODY,
+                created_at=None,
+            )
+        )
+        assert PRValidator(client, "flathub/flathub").validate_pr(7378) is True
+        client.close_pr.assert_not_called()
+        client.post_comment.assert_not_called()
+
+    def test_future_checklist_addition_uses_creation_date(self, monkeypatch):
+        future_item = (
+            "Future submission requirement.",
+            datetime(2026, 10, 1, tzinfo=UTC),
+        )
+        monkeypatch.setattr(
+            parsing, "CHECKLIST_ITEMS", (*CHECKLIST_ITEMS, future_item)
+        )
+        september = datetime(2026, 9, 10, tzinfo=UTC)
+        october = datetime(2026, 10, 1, tzinfo=UTC)
+        after_october = datetime(2026, 10, 1, 0, 0, 1, tzinfo=UTC)
+        eastern_after_october = datetime.fromisoformat(
+            "2026-09-30T20:00:01-04:00"
+        )
+        future_body = f"{FULL_CHECKLIST_BODY}- [x] {future_item[0]}\n"
+
+        assert (
+            checklist_fully_checked(parse_checklist(FULL_CHECKLIST_BODY), september)
+            is True
+        )
+        assert checklist_matches_template(parse_checklist(FULL_CHECKLIST_BODY), october) is False
+        assert (
+            checklist_matches_template(
+                parse_checklist(FULL_CHECKLIST_BODY), after_october
+            )
+            is False
+        )
+        assert (
+            checklist_matches_template(
+                parse_checklist(FULL_CHECKLIST_BODY), eastern_after_october
+            )
+            is False
+        )
+        assert checklist_fully_checked(parse_checklist(future_body), october) is True
+
+    def test_future_unchecked_items_are_exempt(self, monkeypatch):
+        effective_date = datetime(2026, 10, 1, tzinfo=UTC)
+        future_items = (
+            ("Future submission requirement one.", effective_date),
+            ("Future submission requirement two.", effective_date),
+        )
+        monkeypatch.setattr(
+            parsing, "CHECKLIST_ITEMS", (*CHECKLIST_ITEMS, *future_items)
+        )
+        body = (
+            f"{FULL_CHECKLIST_BODY}- [ ] {future_items[0][0]}\n"
+            f"- [ ] {future_items[1][0]}\n"
+        )
+        checklist = parse_checklist(body)
+        september = datetime(2026, 9, 10, tzinfo=UTC)
+
+        assert count_unchecked_relevant_items(checklist, september) == 0
+        assert (
+            validate_pr_structure(
+                make_pr_context(body=body, created_at=september),
+                checklist,
+                "com.example.foobar",
+            ).is_valid
+            is True
+        )
+        assert count_unchecked_relevant_items(checklist, effective_date) == 2
+        assert (
+            validate_pr_structure(
+                make_pr_context(body=body, created_at=effective_date),
+                checklist,
+                "com.example.foobar",
+            ).is_valid
+            is False
+        )
+        assert is_considered_spam(
+            checklist,
+            VALID_FILES,
+            body,
+            set(),
+            "com.example.foobar",
+            effective_date,
+        ) == (True, "Checklist(s) not completed or missing")
 
 class TestHasMasterCommit:
     def test_detected_as_second_commit(self):

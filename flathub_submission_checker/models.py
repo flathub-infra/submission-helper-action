@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, NamedTuple, Protocol
 
 from flathub_submission_checker.constants import (
@@ -35,6 +36,7 @@ class RawPullRequest(Protocol):
     title: str | None
     body: str | None
     draft: bool
+    created_at: datetime | None
 
     def get_issue_comments(self) -> list[RawComment]: ...
     def get_files(self) -> list[RawFile]: ...
@@ -76,6 +78,7 @@ class PRContext:
     is_draft: bool
     files: list[str]
     labels: set[str]
+    created_at: datetime | None
     comment_lines: list[str] = field(default_factory=list)
     has_master_commit: bool = False
 
@@ -88,6 +91,7 @@ class PRContext:
             is_draft=bool(pr.draft),
             files=[f.filename for f in pr.get_files()],
             labels={lbl.name for lbl in pr.get_labels()},
+            created_at=pr.created_at,
             comment_lines=extract_bot_comment_lines(pr),
             has_master_commit=has_master_commit(pr),
         )
